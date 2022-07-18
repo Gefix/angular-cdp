@@ -1,6 +1,6 @@
 {
   "name": "angular-cdp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Angular Change Detection Profiler",
   "main": "index.js",
   "scripts": {

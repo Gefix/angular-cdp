@@ -7,17 +7,19 @@ function processChunk(source, map) {
       {
         search: 'function executeTemplate(tView, lView, templateFn, rf, context) {',
         replace: `const cdp = window.cdp = {};
-cdp.componentTotalRefreshes = 0;
-cdp.componentTotalRenderTime = 0;
-cdp.componentStats = {};
 
 cdp.clearStats = () => {
     cdp.componentTotalRefreshes = 0;
     cdp.componentTotalRenderTime = 0;
     cdp.componentStats = {};
+
+    cdp.tickCount = 0;
+    cdp.tickStats = {};
 }
 
-function componentStat(name, checkAlways, dirty, transplanted, total, templateTime) {
+cdp.clearStats();
+
+function ComponentStat(name, checkAlways, dirty, transplanted, total, templateTime) {
     this.name = name;
     this.checkAlways = checkAlways || 0;
     this.dirty = dirty || 0;
@@ -30,6 +32,21 @@ cdp.showComponentStats = () => {
     const details = Object.values(cdp.componentStats).sort((a, b) => b.total - a.total).map(x => { return { ...x, templateTime: Math.round(x.templateTime) } });
     console.table(details);
     console.log(\`Total Component Refreshes: \${cdp.componentTotalRefreshes}\`);
+}
+
+function TickStat(name, component, fn, invoke, invokeTask, total) {
+    this.name = name;
+    this.component = component;
+    this.fn = fn;
+    this.invoke = invoke || 0;
+    this.invokeTask = invokeTask || 0;
+    this.total = total || 0;
+}
+
+cdp.showTickStats = () => {
+    const details = Object.values(cdp.tickStats).sort((a, b) => b.total - a.total);
+    console.table(details);
+    console.log(\`Angular Change Detection Ticks: \${cdp.tickCount}\`);
 }
 
 const COMPONENT_NAME_SYMBOL = Symbol('ComponentName');
@@ -65,11 +82,38 @@ function getComponentName(lView, deep) {
     return lView[symbol];
 }
 
-window.cdp.getComponentName = getComponentName;
+const wrappers = [
+    [/^(\\(?event\\)?\\s*=>\\s*{\\s*\\/\\/ Ivy uses '__ngUnwrap__' as a special token that allows us to unwrap the function)|(.=>{if\\("__ngUnwrap__"===T\\)return)/, '__ngUnwrap__'],
+    [/^(function wrapListenerIn_markDirtyAndPreventDefault\\(e\\))|(function .\\(.\\){if\\(.===Function\\)return)/, Function]
+]
+
+function unwrapFunction(fn) {
+    let code = fn.toString();
+    let wrapper = null;
+    while (wrapper = wrappers.find(w=>w[0].test(code))) {
+        fn = fn(wrapper[1]);
+        code = fn.toString();
+    }
+    return [fn, code];
+}
+
+function getComponentNameFromFunctionCode(code) {
+    const componentMatch = code.match(/^function ([^_(]+)_/);
+    return componentMatch && componentMatch[1];
+}
+
+function aggregateTaskCall(taskFunction, category) {
+    let [fn, code] = unwrapFunction(taskFunction);
+    code = code.slice(0, 100);
+    const tickStat = cdp.tickStats[code] = cdp.tickStats[code] || new TickStat(code, getComponentNameFromFunctionCode(code), fn);
+    tickStat.fn = fn;
+    tickStat[category]++;
+    tickStat.total++;
+}
 
 function executeTemplate(tView, lView, templateFn, rf, context) {
     const componentName = getComponentName(lView, true);
-    cdp.componentStats[componentName] = cdp.componentStats[componentName] || new componentStat(componentName);
+    cdp.componentStats[componentName] = cdp.componentStats[componentName] || new ComponentStat(componentName);
     const timeStarted = performance.now();
 
 `,
@@ -89,7 +133,7 @@ function executeTemplate(tView, lView, templateFn, rf, context) {
 
         const componentName = getComponentName(componentView);
         if (componentName) {
-            cdp.componentStats[componentName] = cdp.componentStats[componentName] || new componentStat(componentName);
+            cdp.componentStats[componentName] = cdp.componentStats[componentName] || new ComponentStat(componentName);
         }
 `,
       },
@@ -117,6 +161,30 @@ function executeTemplate(tView, lView, templateFn, rf, context) {
                 cdp.componentStats[componentName].transplanted++;
             }
 `,
+      },
+      {
+        search: /this.tick\(\);\s*}/,
+        replace: `cdp.tickCount++;
+                    this.tick();
+                }`,
+      },
+      {
+        search: /onEnter\(zone\);\s*return delegate\.invokeTask\(target, task, applyThis, applyArgs\);/,
+        replace: `if(zone.isStable) {
+                aggregateTaskCall(task.callback, 'invokeTask');
+            }
+
+            onEnter(zone);
+            return delegate.invokeTask(target, task, applyThis, applyArgs);`,
+      },
+      {
+        search: /onEnter\(zone\);\s*return delegate\.invoke\(target, callback, applyThis, applyArgs, source\);/,
+        replace: `if(zone.isStable) {
+                aggregateTaskCall(callback, 'invoke');
+            }
+
+            onEnter(zone);
+            return delegate.invoke(target, callback, applyThis, applyArgs, source);`,
       }
     ]
   };
