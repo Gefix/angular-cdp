@@ -49,9 +49,13 @@ Change the serve.builder from "@angular-devkit/build-angular:dev-server" to "@an
 
 ## Usage
 All data is stored in the window.cdp object at run-time.
-To print the aggregated in the browser's console run
+To print the aggregated component statistics in the browser's console run
 ```
 window.cdp.showComponentStats()
+```
+To print the aggregated change detection tick statistics in the browser's console run
+```
+window.cdp.showTickStats()
 ```
 To clear the data and reset the counters run
 ```
@@ -66,3 +70,13 @@ The following data is collected and aggregated per component during each view te
 * transplanted - the # of times a transplanted view instance of the component was refreshed
 * total - the total # of times an instance of the component was refreshed
 * templateTime - the total time in milliseconds spent in refreshing views of the component (includes time spent in embedded views, but not in child components)
+
+The following data is collected and aggregated for each function/task invocation that makes the angular zone unstable:
+* name - the first 100 characters of the event/callback function source code
+* component - if available, the heuristically extracted name of the component whose template hosts the function
+* fn - a reference to the last recorded function with the same signature. This may capture context and cause memory / GC issues - use clearStats() to free the memory
+* invoke - the # of times the function was called when the ngZone was stable and via direct invocation (usually from async sources such as fetch/setTimeout)
+* invokeTask - the # of times the function was called when the ngZone was stable and via invokeTask (usually from browser UI events)
+* total - the total # of times the function was called when the ngZone was stable. Each such call usually leads to Angular's tick() function being called when the microtask queue becomes empty which in turn explicitly processes change detection and its side-effects.
+
+Note: Due to the complex interaction between zone.js, NgZone, Angular's component lifecycle, and Angular's change detection logic - it is possible for the sum of the individual function invocations to differ from the total window.cdp.tickCount property. Currently the window.cdp.tickCount property holds the amount of times the tick() function has been called due to interaction inside the NgZone - calls due to component loading are not counted.
